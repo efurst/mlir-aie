@@ -59,6 +59,8 @@ def my_matmul():
     n_x_n_cols_in_i32s_out = n_in_i32s_out * n_cols
 
     vectorized = True
+    enable_tracing = True 
+    trace_size = 16384
 
     with mlir_mod_ctx() as ctx:
 
@@ -218,29 +220,38 @@ def my_matmul():
                 object_fifo_link(inB_fifo_names[i], memB_fifo_names[i])
 
             # Output C
-            for i in range(n_cols):
-                for j in range(n_rows):
-                    memC_fifos[i][memC_fifo_names[i][j]] = object_fifo(
-                        memC_fifo_names[i][j],
-                        cores[i][j],
+            if not enable_tracing:
+                for i in range(n_cols):
+                    for j in range(n_rows):
+                        memC_fifos[i][memC_fifo_names[i][j]] = object_fifo(
+                            memC_fifo_names[i][j],
+                            cores[i][j],
+                            mems[i],
+                            2,
+                            memRef_C_ty,
+                        )
+                    outC_fifos[outC_fifo_names[i]] = object_fifo(
+                        outC_fifo_names[i],
                         mems[i],
+                        shims[i],
                         2,
-                        memRef_C_ty,
+                        memRef_outC_ty,
+                        [
+                            (m // r, r * n * word_size_out // 4),
+                            (r, t * word_size_out // 4),
+                            (n // t, r * t * word_size_out // 4),
+                            (t * word_size_out // 4, 1),
+                        ],
                     )
-                outC_fifos[outC_fifo_names[i]] = object_fifo(
-                    outC_fifo_names[i],
-                    mems[i],
-                    shims[i],
-                    2,
-                    memRef_outC_ty,
-                    [
-                        (m // r, r * n * word_size_out // 4),
-                        (r, t * word_size_out // 4),
-                        (n // t, r * t * word_size_out // 4),
-                        (t * word_size_out // 4, 1),
-                    ],
-                )
-                object_fifo_link(memC_fifo_names[i], outC_fifo_names[i])
+                    object_fifo_link(memC_fifo_names[i], outC_fifo_names[i])
+
+            # Set up a circuit-switched flow from core to shim for tracing information
+            
+            compute_trace_col, compute_trace_row = 0, 2
+            trace_tile = _0_ComputeTile2 
+            trace_shim = _0_ShimTile 
+            if enable_tracing:
+                flow(trace_tile, WireBundle.Trace, 0, trace_shim, WireBundle.DMA, 1)
 
             # Set up compute tiles
             for j in range(n_cols):
@@ -250,10 +261,13 @@ def my_matmul():
                     def core_body():
                         for _ in for_(0xFFFFFFFF):
                             for _ in for_(tiles):
-                                elem_out = memC_fifos[j][memC_fifo_names[j][i]].acquire(
-                                    ObjectFifoPort.Produce,
-                                    1,
-                                )
+                                if enable_tracing:
+                                    elem_out = memref.alloc(m, n, T.bf16())
+                                else:
+                                    elem_out = memC_fifos[j][memC_fifo_names[j][i]].acquire(
+                                        ObjectFifoPort.Produce,
+                                        1,
+                                    )
                                 call(zero, [elem_out])
 
                                 for _ in for_(K_div_k):
@@ -273,10 +287,10 @@ def my_matmul():
                                         ObjectFifoPort.Consume, 1
                                     )
                                     yield_([])
-
-                                memC_fifos[j][memC_fifo_names[j][i]].release(
-                                    ObjectFifoPort.Produce, 1
-                                )
+                                if not enable_tracing:
+                                    memC_fifos[j][memC_fifo_names[j][i]].release(
+                                        ObjectFifoPort.Produce, 1
+                                    )
                                 yield_([])
                             yield_([])
 
@@ -288,6 +302,86 @@ def my_matmul():
                 T.memref(C_sz_in_i32s, T.i32()),
             )
             def sequence(A, B, C):
+                # Configure tracing, see https://github.com/Xilinx/mlir-aie/blob/resnet/docs/Tracing.md
+                if enable_tracing:
+                    # 0x340D0: Trace Control 0
+                    #          0xAABB---C
+                    #            AA        <- Event to stop trace capture
+                    #              BB      <- Event to start trace capture
+                    #                   C  <- Trace mode, 00=event=time, 01=event-PC, 10=execution
+                    # Configure so that "Event 1" (always true) causes tracing to start
+                    ipu_write32(
+                        column=compute_trace_col,
+                        row=compute_trace_row,
+                        address=0x340D0,
+                        value=0x00010000,
+                    )
+                    # 0x340D4: Trace Control 1
+                    ipu_write32(
+                        column=compute_trace_col,
+                        row=compute_trace_row,
+                        address=0x340D4,
+                        value=0x00000000,
+                    )
+                    # 0x340E0: Trace Event Group 1  (Which events to trace)
+                    #          0xAABBCCDD    AA, BB, CC, DD <- four event slots
+                    ipu_write32(
+                        column=compute_trace_col,
+                        row=compute_trace_row,
+                        address=0x340E0,
+                        value=0x4B222125,
+                    )
+                    # 0x340E4: Trace Event Group 2  (Which events to trace)
+                    #          0xAABBCCDD    AA, BB, CC, DD <- four event slots
+                    ipu_write32(
+                        column=compute_trace_col,
+                        row=compute_trace_row,
+                        address=0x340E4,
+                        value=0x2D2C1A4F,
+                    )
+
+                    ipu_write32(
+                        column=compute_trace_col,
+                        row=compute_trace_row,
+                        address=0x3FF00,
+                        value=0x00000121,
+                    )
+
+                    # Configure a buffer descriptor to write tracing information that has been routed into this shim tile
+                    # out to host DDR memory
+                    trace_bd_id = 13  # use BD 13 for writing trace output from compute tile to DDR host memory
+                    output_size = C_sz_in_bytes
+                    ipu_writebd_shimtile(
+                        bd_id=trace_bd_id,
+                        buffer_length=trace_size,
+                        buffer_offset=output_size,
+                        enable_packet=0,
+                        out_of_order_id=0,
+                        packet_id=0,
+                        packet_type=0,
+                        column=0,
+                        column_num=1,
+                        d0_size=0,
+                        d0_stride=0,
+                        d1_size=0,
+                        d1_stride=0,
+                        d2_stride=0,
+                        ddr_id=2,
+                        iteration_current=0,
+                        iteration_size=0,
+                        iteration_stride=0,
+                        lock_acq_enable=0,
+                        lock_acq_id=0,
+                        lock_acq_val=0,
+                        lock_rel_id=0,
+                        lock_rel_val=0,
+                        next_bd=0,
+                        use_next_bd=0,
+                        valid_bd=1,
+                    )
+                    # Set start BD to our shim bd_Id (3)
+                    ipu_write32(column=compute_trace_col, row=0, address=0x1D20C, value=trace_bd_id)
+
                 # only do 5 tile rows at a time before synchronizing, so we can reuse BDs
                 rows_per_block = 5
                 for tile_row_block in range(
@@ -305,23 +399,24 @@ def my_matmul():
                     for i in range(n_cols):
                         C_col_offset = i * n * word_size_out
                         C_offset_in_i32s = (C_col_offset + C_row_offset) // 4
-                        ipu_dma_memcpy_nd(
-                            metadata=outC_fifo_names[i],
-                            bd_id=0,
-                            mem=C,
-                            offsets=[0, 0, 0, C_offset_in_i32s],
-                            sizes=[
-                                num_tile_rows,
-                                N_div_n_div_n_cols,
-                                m_x_n_rows,
-                                n_in_i32s_out,
-                            ],
-                            strides=[
-                                m_x_n_rows_x_N_in_i32s_out,
-                                n_x_n_cols_in_i32s_out,
-                                N_in_i32s_out,
-                            ],
-                        )
+                        if not enable_tracing:
+                            ipu_dma_memcpy_nd(
+                                metadata=outC_fifo_names[i],
+                                bd_id=0,
+                                mem=C,
+                                offsets=[0, 0, 0, C_offset_in_i32s],
+                                sizes=[
+                                    num_tile_rows,
+                                    N_div_n_div_n_cols,
+                                    m_x_n_rows,
+                                    n_in_i32s_out,
+                                ],
+                                strides=[
+                                    m_x_n_rows_x_N_in_i32s_out,
+                                    n_x_n_cols_in_i32s_out,
+                                    N_in_i32s_out,
+                                ],
+                            )
                         for tile_row in range(num_tile_rows):
                             A_row_offset_in_i32s = (
                                 ((tile_row_block * rows_per_block) + tile_row)
@@ -354,8 +449,9 @@ def my_matmul():
                                 sizes=[N_div_n_div_n_cols, K_div_k, k, n_in_i32s],
                                 strides=[n_x_n_cols_in_i32s, k_x_N_in_i32s, N_in_i32s],
                             )
-                    for i in range(n_cols):
-                        ipu_sync(column=i, row=0, direction=0, channel=0)
+                    if not enable_tracing:
+                        for i in range(n_cols):
+                            ipu_sync(column=i, row=0, direction=0, channel=0)
 
     # print(ctx.module.operation.verify())
     print(ctx.module)

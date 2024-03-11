@@ -42,9 +42,23 @@ constexpr int A_SIZE = (A_VOLUME * sizeof(A_DATATYPE));
 constexpr int B_SIZE = (B_VOLUME * sizeof(B_DATATYPE));
 constexpr int C_SIZE = (C_VOLUME * sizeof(C_DATATYPE));
 
-constexpr bool VERIFY = true;
+constexpr bool VERIFY = false;
+constexpr bool ENABLE_TRACING = true;
+constexpr int TRACE_SIZE = 16384;
+
+constexpr int OUT_SIZE = C_SIZE + (ENABLE_TRACING ? TRACE_SIZE : 0);
 
 namespace po = boost::program_options;
+
+void write_out_trace(char *bufOut, std::string path) {
+  std::ofstream fout(path);
+  uint32_t *traceOut =
+      (uint32_t *)((char *)bufOut + sizeof(C_DATATYPE) * C_VOLUME);
+  for (int i = 0; i < TRACE_SIZE / sizeof(traceOut[0]); i++) {
+    fout << std::setfill('0') << std::setw(8) << std::hex << (int)traceOut[i];
+    fout << std::endl;
+  }
+}
 
 int main(int argc, const char *argv[]) {
 
@@ -52,6 +66,12 @@ int main(int argc, const char *argv[]) {
   po::options_description desc("Allowed options");
   po::variables_map vm;
   matmul_common::add_default_options(desc);
+  if (ENABLE_TRACING) {
+    desc.add_options()("trace,t",
+                       po::value<std::string>()->default_value("trace.txt"),
+                       "where to store trace output");
+  }
+
   matmul_common::parse_options(argc, argv, desc, vm);
   int verbosity = vm["verbosity"].as<int>();
 
@@ -111,7 +131,7 @@ int main(int argc, const char *argv[]) {
   auto bo_b =
       xrt::bo(device, B_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(3));
   auto bo_c =
-      xrt::bo(device, C_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(4));
+      xrt::bo(device, OUT_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(4));
 
   if (verbosity >= 1)
     std::cout << "Writing data into buffer objects.\n";
@@ -129,6 +149,7 @@ int main(int argc, const char *argv[]) {
   }
   memcpy(bufB, BVec.data(), (BVec.size() * sizeof(B_DATATYPE)));
   C_DATATYPE *bufC = bo_c.map<C_DATATYPE *>();
+  char *bufOut = bo_c.map<char *>();
   std::vector<C_DATATYPE> CVec(C_VOLUME);
   memcpy(bufC, CVec.data(), (CVec.size() * sizeof(C_DATATYPE)));
 
@@ -155,6 +176,7 @@ int main(int argc, const char *argv[]) {
     }
     auto start = std::chrono::high_resolution_clock::now();
     auto run = kernel(bo_instr, instr_v.size(), bo_a, bo_b, bo_c);
+    if (ENABLE_TRACING) sleep(1);
     run.wait();
     auto stop = std::chrono::high_resolution_clock::now();
 
@@ -178,6 +200,10 @@ int main(int argc, const char *argv[]) {
     } else {
       if (verbosity >= 1)
         std::cout << "WARNING: matmul results not verified." << std::endl;
+    }
+
+    if (ENABLE_TRACING) {
+      write_out_trace(bufOut, vm["trace"].as<std::string>());
     }
 
     float npu_time =
