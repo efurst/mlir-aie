@@ -60,7 +60,9 @@ def my_matmul():
 
     vectorized = True
     enable_tracing = True 
-    trace_size = 16384
+    # trace_size = 16384 // 4
+    trace_size = 32768 // n_cols
+    # trace_size = 8192
 
     with mlir_mod_ctx() as ctx:
 
@@ -251,7 +253,16 @@ def my_matmul():
             trace_tile = _0_ComputeTile2 
             trace_shim = _0_ShimTile 
             if enable_tracing:
-                flow(trace_tile, WireBundle.Trace, 0, trace_shim, WireBundle.DMA, 1)
+                #flow(trace_tile, WireBundle.Trace, 0, trace_shim, WireBundle.DMA, 1)
+                #  pktflow0 = packetflow(0, _0_ComputeTile2, WireBundle.Trace, 0, trace_shim, WireBundle.DMA, 1)
+                #  pktflow0.keep_pkt_headerJ = True
+                #packetflow(1, _1_ComputeTile2, WireBundle.Trace, 0, trace_shim, WireBundle.DMA, 1)
+                #packetflow(2, _2_ComputeTile2, WireBundle.Trace, 0, trace_shim, WireBundle.DMA, 1)
+                #packetflow(3, _3_ComputeTile2, WireBundle.Trace, 0, trace_shim, WireBundle.DMA, 1)
+                flow(_0_ComputeTile2, WireBundle.Trace, 0, _0_ShimTile, WireBundle.DMA, 1)
+                flow(_1_ComputeTile2, WireBundle.Trace, 0, _1_ShimTile, WireBundle.DMA, 1)
+                flow(_2_ComputeTile2, WireBundle.Trace, 0, _2_ShimTile, WireBundle.DMA, 1)
+                flow(_3_ComputeTile2, WireBundle.Trace, 0, _3_ShimTile, WireBundle.DMA, 1)
 
             # Set up compute tiles
             for j in range(n_cols):
@@ -304,83 +315,100 @@ def my_matmul():
             def sequence(A, B, C):
                 # Configure tracing, see https://github.com/Xilinx/mlir-aie/blob/resnet/docs/Tracing.md
                 if enable_tracing:
-                    # 0x340D0: Trace Control 0
-                    #          0xAABB---C
-                    #            AA        <- Event to stop trace capture
-                    #              BB      <- Event to start trace capture
-                    #                   C  <- Trace mode, 00=event=time, 01=event-PC, 10=execution
-                    # Configure so that "Event 1" (always true) causes tracing to start
-                    ipu_write32(
-                        column=compute_trace_col,
-                        row=compute_trace_row,
-                        address=0x340D0,
-                        value=0x00010000,
-                    )
-                    # 0x340D4: Trace Control 1
-                    ipu_write32(
-                        column=compute_trace_col,
-                        row=compute_trace_row,
-                        address=0x340D4,
-                        value=0x00000000,
-                    )
-                    # 0x340E0: Trace Event Group 1  (Which events to trace)
-                    #          0xAABBCCDD    AA, BB, CC, DD <- four event slots
-                    ipu_write32(
-                        column=compute_trace_col,
-                        row=compute_trace_row,
-                        address=0x340E0,
-                        value=0x4B222125,
-                    )
-                    # 0x340E4: Trace Event Group 2  (Which events to trace)
-                    #          0xAABBCCDD    AA, BB, CC, DD <- four event slots
-                    ipu_write32(
-                        column=compute_trace_col,
-                        row=compute_trace_row,
-                        address=0x340E4,
-                        value=0x2D2C1A4F,
-                    )
 
-                    ipu_write32(
-                        column=compute_trace_col,
-                        row=compute_trace_row,
-                        address=0x3FF00,
-                        value=0x00000121,
-                    )
+                    for trace_col in range(n_cols):
 
-                    # Configure a buffer descriptor to write tracing information that has been routed into this shim tile
-                    # out to host DDR memory
-                    trace_bd_id = 13  # use BD 13 for writing trace output from compute tile to DDR host memory
-                    output_size = C_sz_in_bytes
-                    ipu_writebd_shimtile(
-                        bd_id=trace_bd_id,
-                        buffer_length=trace_size,
-                        buffer_offset=output_size,
-                        enable_packet=0,
-                        out_of_order_id=0,
-                        packet_id=0,
-                        packet_type=0,
-                        column=0,
-                        column_num=1,
-                        d0_size=0,
-                        d0_stride=0,
-                        d1_size=0,
-                        d1_stride=0,
-                        d2_stride=0,
-                        ddr_id=2,
-                        iteration_current=0,
-                        iteration_size=0,
-                        iteration_stride=0,
-                        lock_acq_enable=0,
-                        lock_acq_id=0,
-                        lock_acq_val=0,
-                        lock_rel_id=0,
-                        lock_rel_val=0,
-                        next_bd=0,
-                        use_next_bd=0,
-                        valid_bd=1,
-                    )
-                    # Set start BD to our shim bd_Id (3)
-                    ipu_write32(column=compute_trace_col, row=0, address=0x1D20C, value=trace_bd_id)
+                        # 0x340D0: Trace Control 0
+                        #          0xAABB---C
+                        #            AA        <- Event to stop trace capture
+                        #              BB      <- Event to start trace capture
+                        #                   C  <- Trace mode, 00=event=time, 01=event-PC, 10=execution
+                        # Configure so that "Event 1" (always true) causes tracing to start
+                        ipu_write32(
+                            #column=compute_trace_col,
+                            column=trace_col,
+                            row=compute_trace_row,
+                            address=0x340D0,
+                            value=0x00010000,
+                        )
+                        # 0x340D4: Trace Control 1
+                        ipu_write32(
+                            #column=compute_trace_col,
+                            column=trace_col,
+                            row=compute_trace_row,
+                            address=0x340D4,
+                            value=0x00000000,
+                        )
+                        # 0x340E0: Trace Event Group 1  (Which events to trace)
+                        #          0xAABBCCDD    AA, BB, CC, DD <- four event slots
+                        ipu_write32(
+                            #column=compute_trace_col,
+                            column=trace_col,
+                            row=compute_trace_row,
+                            address=0x340E0,
+                            #value=0x4B222125,
+                            value=0x4B222117,
+                        )
+                        # 0x340E4: Trace Event Group 2  (Which events to trace)
+                        #          0xAABBCCDD    AA, BB, CC, DD <- four event slots
+                        ipu_write32(
+                            #column=compute_trace_col,
+                            column=trace_col,
+                            row=compute_trace_row,
+                            address=0x340E4,
+                            value=0x504C1A4F,
+                            #value=0x2D2C1A4F,
+                        )
+    
+                        ipu_write32(
+                            #column=compute_trace_col,
+                            column=trace_col,
+                            row=compute_trace_row,
+                            address=0x3FF00,
+                            value=0x00002221,
+                            #value=0x00000121,
+                            #value=0x00002322,
+                        )
+                    
+
+
+                        # Configure a buffer descriptor to write tracing information that has been routed into this shim tile
+                        # out to host DDR memory
+                        
+                        trace_bd_id = 13+trace_col  # use BD 13 for writing trace output from compute tile to DDR host memory
+                        output_size = C_sz_in_bytes+(trace_size*trace_col)
+                        ipu_writebd_shimtile(
+                            bd_id=trace_bd_id,
+                            buffer_length=trace_size,
+                            #buffer_offset=trace_size*trace_col,
+                            buffer_offset=output_size,
+                            enable_packet=1,
+                            out_of_order_id=0,
+                            packet_id=0,
+                            packet_type=0,
+                            column=trace_col,
+                            column_num=1,
+                            d0_size=0,
+                            d0_stride=0,
+                            d1_size=0,
+                            d1_stride=0,
+                            d2_stride=0,
+                            ddr_id=2,
+                            iteration_current=0,
+                            iteration_size=0,
+                            iteration_stride=0,
+                            lock_acq_enable=0,
+                            lock_acq_id=0,
+                            lock_acq_val=0,
+                            lock_rel_id=0,
+                            lock_rel_val=0,
+                            next_bd=0,
+                            use_next_bd=0,
+                            valid_bd=1,
+                        )
+                        # Set start BD to our shim bd_Id (3)
+                        # ipu_write32(column=compute_trace_col, row=0, address=0x1D20C, value=trace_bd_id)
+                        ipu_write32(column=trace_col, row=0, address=0x1D20C, value=trace_bd_id)
 
                 # only do 5 tile rows at a time before synchronizing, so we can reuse BDs
                 rows_per_block = 5

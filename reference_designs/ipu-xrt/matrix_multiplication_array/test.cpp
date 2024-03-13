@@ -44,7 +44,8 @@ constexpr int C_SIZE = (C_VOLUME * sizeof(C_DATATYPE));
 
 constexpr bool VERIFY = false;
 constexpr bool ENABLE_TRACING = true;
-constexpr int TRACE_SIZE = 16384;
+// constexpr int TRACE_SIZE = 16384;
+constexpr int TRACE_SIZE = 32768;
 
 constexpr int OUT_SIZE = C_SIZE + (ENABLE_TRACING ? TRACE_SIZE : 0);
 
@@ -161,7 +162,7 @@ int main(int argc, const char *argv[]) {
   bo_b.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bo_c.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
-  unsigned num_iter = 10;
+  unsigned num_iter = 1;
   float npu_time_total = 0;
   float npu_time_min = 9999999;
   float npu_time_max = 0;
@@ -176,7 +177,9 @@ int main(int argc, const char *argv[]) {
     }
     auto start = std::chrono::high_resolution_clock::now();
     auto run = kernel(bo_instr, instr_v.size(), bo_a, bo_b, bo_c);
-    if (ENABLE_TRACING) sleep(1);
+    // if (ENABLE_TRACING) sleep(1);
+    // if (ENABLE_TRACING) sleep(2);
+    if (ENABLE_TRACING) sleep(5);
     run.wait();
     auto stop = std::chrono::high_resolution_clock::now();
 
