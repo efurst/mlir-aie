@@ -30,6 +30,8 @@ set(TARGET_NAME test CACHE STRING "Target to be built")
 SET (ProjectName ${TARGET_NAME})
 SET (currentTarget ${TARGET_NAME})
 
+set(CMAKE_CXX_STANDARD 23)
+
 if ( WSL )
 	set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR})
 endif ()
