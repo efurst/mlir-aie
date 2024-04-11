@@ -18,9 +18,9 @@ KERNEL_LIB=${ACDC_AIE}/../../aie_kernels/generic/
 
 all: build/final.xclbin build/insts.txt
 
-build/vector_max.o: ${KERNEL_LIB}/vector_max.cc
+build/vector_max.o: 
 	mkdir -p ${@D}
-	cd ${@D} && xchesscc_wrapper ${CHESS_FLAGS} -DBIT_WIDTH=8 -c $< -o ${@F}
+	cd ${@D} && xchesscc_wrapper ${CHESS_FLAGS} -DBIT_WIDTH=8 -c ${KERNEL_LIB}/vector_max.cc -o ${@F}
 
 build/aie.mlir: aie2.py
 	mkdir -p ${@D}
@@ -55,10 +55,10 @@ clean_trace:
 vck5000: devicename=xcvc1902
 vck5000: col=6
 vck5000: CHESS_FLAGS=${CHESSCCWRAP1_FLAGS}
-vck5000: KERNEL_LIB=${ACDC_AIE}/../aie_kernels/aie1/
+vck5000: KERNEL_LIB=${ACDC_AIE}/../aie_kernels/generic/
 
-vck5000: build/aie.mlir build/scale.o
-	cp build/scale.o* ./
+vck5000: build/aie.mlir build/vector_max.o
+	cp build/vector_max.o* ./
 	aiecc.py --link_against_hsa --host-target=x86_64-amd-linux-gnu build/aie.mlir \
 		-I/opt/xaiengine/include \
 		-I$(ACDC_AIE)/runtime_lib/x86_64-hsa/test_lib/include \

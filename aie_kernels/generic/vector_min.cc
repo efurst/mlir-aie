@@ -1,3 +1,4 @@
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,7 +28,7 @@ void vector(int32_t *restrict in, int32_t *restrict out) {
   v16int32 fourth = min(third, third_shift);
   v16int32 fourth_shift = shift_bytes(fourth, fourth, 4);
   v16int32 fifth = min(fourth, fourth_shift);
-  int32_t last = extract_elem(fifth, 0);
+  int32_t last = ext_elem(fifth, 0);
   *(int32_t *)out = last;
   return;
 }
